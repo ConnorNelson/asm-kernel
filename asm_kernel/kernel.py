@@ -2,6 +2,7 @@ import os
 import subprocess
 import tempfile
 import contextlib
+import textwrap
 
 from ipykernel.kernelbase import Kernel
 
@@ -62,21 +63,41 @@ class ASMKernel(Kernel):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.codes = []
-        self.codes.append(
+
+    @property
+    def code(self):
+        labels = {}
+        for code in self.codes:
+            label = None
+            content = ""
+            for line in code.split("\n"):
+                line = line.strip()
+                if not line.startswith(".") and ":" in line:
+                    if label:
+                        labels[label] = content
+                    label = line[: line.index(":")]
+                    content = ""
+                content += f"{line}\n"
+            if label:
+                labels[label] = content
+
+        code = textwrap.dedent(
             """
             .intel_syntax noprefix
             .global _start
             .set SYS_write, 1
             .set SYS_exit, 60
             .section .text
+
             """
         )
 
-    @property
-    def code(self):
-        return "\n".join(
-            "\n".join(line.strip() for line in code.split("\n")) for code in self.codes
-        )
+        for content in labels.values():
+            if not content.endswith("\n"):
+                content += "\n"
+            code += content
+
+        return code
 
     def do_run(self):
         binary = build_binary(self.code)
