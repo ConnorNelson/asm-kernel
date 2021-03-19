@@ -35,18 +35,25 @@ def temp_binary(binary):
 
 
 @contextlib.contextmanager
-def run_binary(binary, *args, **kwargs):
+def run_binary(binary, *args, gdb=None, **kwargs):
+    for name in ["stdin", "stdout", "stderr"]:
+        kwargs.setdefault(name, subprocess.PIPE)
+
+    cmd = []
+    if gdb:
+        with tempfile.NamedTemporaryFile("w", delete=False) as script:
+            script.write(gdb)
+        cmd += ["/usr/bin/gdb", "-x", script.name, "--batch", "--args"]
+
     with temp_binary(binary) as binary_path:
-        stdin = kwargs.pop("stdin", subprocess.PIPE)
-        stdout = kwargs.pop("stdout", subprocess.PIPE)
-        stderr = kwargs.pop("stderr", subprocess.PIPE)
-        process = subprocess.Popen(
-            [binary_path, *args], stdin=stdin, stdout=stdout, stderr=stderr, **kwargs
-        )
+        cmd += [binary_path, *args]
+        process = subprocess.Popen(cmd, **kwargs)
         try:
             yield process
         finally:
             process.kill()
+            if gdb:
+                os.unlink(script.name)
 
 
 class ASMKernel(Kernel):
@@ -99,13 +106,6 @@ class ASMKernel(Kernel):
 
         return code
 
-    def do_run(self):
-        binary = build_binary(self.code)
-        with run_binary(binary) as process:
-            stdout, stderr = process.communicate()
-            returncode = process.returncode
-        return dict(stdout=stdout, stderr=stderr, returncode=returncode)
-
     def do_execute(
         self, code, silent, store_history=True, user_expressions=None, allow_stdin=False
     ):
@@ -120,8 +120,9 @@ class ASMKernel(Kernel):
                     magics = {
                         "readelf": self.magic_readelf,
                         "asm": self.magic_asm,
+                        "gdb": lambda: self.magic_gdb(code),
                     }
-                    magic = code.strip()[1:]
+                    magic = code.split()[0][1:]
                     if magic in magics:
                         results = magics[magic]()
 
@@ -150,6 +151,13 @@ class ASMKernel(Kernel):
             "user_expressions": {},
         }
 
+    def do_run(self):
+        binary = build_binary(self.code)
+        with run_binary(binary) as process:
+            stdout, stderr = process.communicate()
+            returncode = process.returncode
+        return dict(stdout=stdout, stderr=stderr, returncode=returncode)
+
     def magic_readelf(self):
         binary = build_binary(self.code)
         with temp_binary(binary) as binary_path:
@@ -158,3 +166,10 @@ class ASMKernel(Kernel):
 
     def magic_asm(self):
         return dict(asm=self.code)
+
+    def magic_gdb(self, code):
+        script = code.split("\n", 1)[1]
+        binary = build_binary(self.code)
+        with run_binary(binary, gdb=script) as process:
+            stdout, _ = process.communicate()
+        return dict(gdb=stdout)
